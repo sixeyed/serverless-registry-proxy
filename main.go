@@ -36,6 +36,9 @@ const (
 var (
 	re                 = regexp.MustCompile(`^/v2/`)
 	realm              = regexp.MustCompile(`realm="(.*?)"`)
+	chScope		   	   = regexp.MustCompile(`repository:ch\d{2}/\.*`)
+	chUrl			   = regexp.MustCompile(`/v2/ch\d{2}/.*`)
+	chFullUrl		   = regexp.MustCompile(`v2/diamol/ch\d{2}/.*`)
 )
 
 type myContextKey string
@@ -145,12 +148,24 @@ func tokenProxyHandler(tokenEndpoint, repoPrefix string) http.HandlerFunc {
 		FlushInterval: -1,
 		Director: func(r *http.Request) {
 			orig := r.URL.String()
-
 			q := r.URL.Query()
 			scope := q.Get("scope")
 			if scope == "" {
 				return
 			}
+
+			// repository:ch03/lab:pull
+			// ->
+			// repository:ch03-lab:pull
+			log.Printf("tokenProxyHandler: scope: %s", scope)
+			matches := chScope.FindStringSubmatch(scope)
+			if len(matches) == 1 {
+				s := []rune(scope)
+				s[15] = '-'
+				scope = string(s)
+				log.Printf("tokenProxyHandler: new scope: %s", scope)
+			}
+
 			newScope := strings.Replace(scope, "repository:", fmt.Sprintf("repository:%s/", repoPrefix), 1)
 			q.Set("scope", newScope)
 			u, _ := url.Parse(tokenEndpoint)
@@ -189,6 +204,19 @@ func registryAPIProxy(cfg registryConfig, auth authenticator) http.HandlerFunc {
 func rewriteRegistryV2URL(c registryConfig) func(*http.Request) {
 	return func(req *http.Request) {
 		u := req.URL.String()
+		
+		// /v2/ch03/web-ping/blobs/sha256:f5cca017994fef7c658f164ec50cb3b67303f6b27eee2fdde792c9b8c6d2f72b 
+		// ->
+		// /v2/ch03-web-ping/blobs/sha256:f5cca017994fef7c658f164ec50cb3b67303f6b27eee2fdde792c9b8c6d2f72b
+		log.Printf("rewriteRegistryV2URL: url: %s", u)
+		matches := chUrl.FindStringSubmatch(u)
+		if len(matches) == 1 {
+			s := []rune(u)
+			s[8] = '-'
+			u = string(s)
+			log.Printf("rewriteRegistryV2URL: new url: %s", u)
+		}
+
 		req.Host = c.host
 		req.URL.Scheme = "https"
 		req.URL.Host = c.host
@@ -205,6 +233,19 @@ type registryRoundtripper struct {
 
 func (rrt *registryRoundtripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	log.Printf("request received. url=%s", req.URL)
+
+	// https://index.docker.io/v2/diamol/ch03/lab/manifests/latest
+	// ->
+	// https://index.docker.io/v2/diamol/ch03-lab/manifests/latest
+	u := req.URL.String()
+	matches := chFullUrl.FindStringSubmatch(u)
+	if len(matches) == 1 {
+		s := []rune(u)
+		s[38] = '-'
+		u = string(s)
+		req.URL,_ = url.Parse(u)
+		log.Printf("RoundTrip new url: %s", u)
+	}
 
 	if rrt.auth != nil {
 		req.Header.Set("Authorization", rrt.auth.AuthHeader())
